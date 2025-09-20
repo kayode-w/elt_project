@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+
+  - name: raw_public        # 👈 this is just a label for dbt, it's not the actual Postgres schema name.
+    # description: "Raw data from the destination PostgreSQL database."
+    # database: destination_db
+    schema: public               # 👈 this is where the raw tables live, its what tells dbt where in Postgres to look.
+
+    tables:
+      - name: films
+        description: "List of films."
+      - name: actors
+        description: "List of actors."
+      - name: film_actors
+        description: "Mapping between films and actors."
+
+

@@ -1,0 +1,174 @@
+services:
+  source_postgres:
+    image: postgres:latest
+    ports:
+      - "5435:5432"  # STREET→APARTMENT doors: use localhost:5435 from your laptop; inside the container Postgres listens on 5432
+    networks:
+      - elt_network   # Same hallway as others, so containers can talk by name: "source_postgres"
+    environment:
+      POSTGRES_DB: source_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+    volumes:
+      # Moving in a "welcome package" (init SQL) for day-one setup only.
+      # Left side = your laptop file; right side = the special room Postgres checks ON FIRST START.
+      # This does NOT save data; it only bootstraps tables/seed once.
+      - ./source_db_init/init.sql:/docker-entrypoint-initdb.d/source_db_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d source_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  destination_postgres:
+    image: postgres:latest
+    ports:
+      - "5434:5432"   # STREET→APARTMENT: use localhost:5434 from laptop; inside, Postgres listens on 5432
+    networks:
+      - elt_network
+    environment:
+      POSTGRES_DB: destination_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+    healthcheck: # How Docker checks if Postgres is ready for business
+      test: ["CMD-SHELL", "pg_isready -U postgres -d destination_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # TIP for real persistence (optional): add a named volume to store actual database files:
+    # volumes:
+    #   - dest_data:/var/lib/postgresql/data  # This is the apartment’s wardrobe where Postgres keeps real data
+
+
+
+## Commented out Elt and DBT since we're using Airflow to orchestrate the workflow.
+
+  # elt_script:  # Runs your Python that copies from source to destination
+  #   build:
+  #     context: ./elt        # Where the Dockerfile for this apt lives
+  #     dockerfile: Dockerfile
+  #   command: ["python", "elt_script.py"]
+  #   depends_on:
+  #     source_postgres:
+  #       condition: service_healthy
+  #     destination_postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - elt_network          # In the same hallway, so it can just knock: "source_postgres:5432", "destination_postgres:5432"
+
+  # dbt:  # Runs dbt
+  #   build:
+  #     context: ./dbt
+  #     dockerfile: Dockerfile
+  #   command: ["run","--project-dir","/dbt","--profiles-dir","/root/.dbt"]
+  #   networks: [elt_network]
+  #   volumes:
+  #     - ./custom_postgres:/dbt   # Your dbt PROJECT folder (with dbt_project.yml) moved into the /dbt room of this apartment
+  #     - ${HOME}/.dbt:/root/.dbt  # Your laptop’s dbt filing cabinet (profiles.yml) handed to dbt in /root/.dbt
+  #   depends_on:
+  #     destination_postgres:
+  #       condition: service_healthy
+  #     elt_script:
+  #       condition: service_completed_successfully
+  #   environment:
+  #     DBT_PROFILE: default       # Optional hints; dbt mainly uses the profile name set in dbt_project.yml
+  #     DBT_TARGET: dev
+
+
+  postgres: #postgress database for airflow to store it's metadata
+      image: postgres:latest
+      ports:
+        - "5433:5432"   # STREET→APARTMENT: use localhost:5433 from laptop; inside, Postgres listens on 5432
+      networks:
+        - elt_network
+      environment:
+        - POSTGRES_USER: airflow
+        - POSTGRES_PASSWORD: airflow
+        - POSTGRES_DB: airflow
+
+  init-airflow:
+    image: apache/airflow:latest
+    depends_on: 
+      - postgres
+    networks:
+      - elt_network
+    environment:
+      - AIRFLOW__ATABASE__SQL_ALCHEMY_CONN=postgres+psycopg2://airflow:airflow@postgres/airflow
+    command: >
+      bash -c "
+      airflow db init 
+      && airflow users create --username airflow --password password --firstname john --lastname kerry --role admin --email john.kerry@example.com
+      "
+  webserver:
+    build:
+      context:
+        dockerfile: Dockerfile
+      user: root
+      depends_on:
+          - postgres #airflow shouldn't start up until the postgres db for the metadata is ready
+      networks:
+        - elt_network
+      extra_hosts:
+        - "host.docker.internal:host-gateway" #to allow airflow to access dbt and postgres running on host machine
+      volumes: 
+        - ./airflow/DAGs:/opt/airflow/DAGs
+        - ./elt:/opt/airflow/elt
+        - ./custom_postgres:/opt/dbt
+        - /var/run/docker.sock:/var/run/docker.sock #to allow airflow to communicate with docker engine
+        - ${HOME}/.dbt:/root/.dbt  # Your laptop’s dbt filing cabinet (profiles.yml) handed to dbt in /root/.dbt
+        - ./custom_postgres:/dbt   # Your dbt PROJECT folder (with dbt_project.yml) moved into the /dbt room of this apartment
+      environment:
+        - LOAD_EX=n
+        - EXECUTOR=Local
+        - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgres+psycopg2://airflow:airflow@postgres/airflow
+        - AIRFLOW__CORE__FERNET_KEY=gQgtwrkWj32D6vaQ5aTrnnGNdIx3wSqNxzHw5TfzQLk=
+        - AIRFLOW__WEBSERVER__DEFAULT_USERNAME=airflow
+        - AIRFLOW__WEBSERVER__DEFAULT_PASSWORD=password
+        - AIRFLOW__WWW__DEFAULT_USERNAME=airflow
+        - AIRFLOW__WWW__DEFAULT_PASSWORD=password 
+        - AIRFLOW__WEBSERVER__SECRET_KEY=secret
+      ports:
+        - "8080:8080"
+
+  scheduler:
+    build:
+      context:
+        dockerfile: Dockerfile
+      user: root
+      depends_on:
+          - postgres #airflow shouldn't start up until the postgres db for the metadata is ready
+      networks:
+        - elt_network
+      extra_hosts:
+        - "host.docker.internal:host-gateway" #to allow airflow to access dbt and postgres running on host machine
+      volumes: 
+        - ./airflow/DAGs:/opt/airflow/DAGs
+        - ./elt:/opt/airflow/elt
+        - ./custom_postgres:/opt/dbt
+        - /var/run/docker.sock:/var/run/docker.sock #to allow airflow to communicate with docker engine
+        - ${HOME}/.dbt:/root/.dbt  # Your laptop’s dbt filing cabinet (profiles.yml) handed to dbt in /root/.dbt
+        - ./custom_postgres:/dbt   # Your dbt PROJECT folder (with dbt_project.yml) moved into the /dbt room of this apartment
+      environment:
+        - LOAD_EX=n
+        - EXECUTOR=Local
+        - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgres+psycopg2://airflow:airflow@postgres/airflow
+        - AIRFLOW__CORE__FERNET_KEY=gQgtwrkWj32D6vaQ5aTrnnGNdIx3wSqNxzHw5TfzQLk=
+        - AIRFLOW__WEBSERVER__DEFAULT_USERNAME=airflow
+        - AIRFLOW__WEBSERVER__DEFAULT_PASSWORD=password
+        - AIRFLOW__WWW__DEFAULT_USERNAME=airflow
+        - AIRFLOW__WWW__DEFAULT_PASSWORD=password 
+        - AIRFLOW__WEBSERVER__SECRET_KEY=secret
+    command: scheduler
+
+
+networks:
+  elt_network:
+    driver: bridge
+
+# For real Postgres persistence (optional), uncomment these:
+# volumes:
+#   dest_data:
+#   src_data:
+
+
+
