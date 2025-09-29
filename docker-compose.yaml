@@ -83,13 +83,35 @@ services:
       - ./custom_postgres/airflow/DAGs:/opt/airflow/dags        # DAG code → Airflow’s DAGs folder
       - ./elt:/opt/airflow/dags/elt                             # helper scripts used by your PythonOperator
       - /var/run/docker.sock:/var/run/docker.sock               # lets DockerOperator talk to Docker daemon
+      - ./airflow_logs:/opt/airflow/logs
       # (Removed /dbt mounts here; they aren’t used by Airflow itself—your DockerOperator mounts dbt separately)
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__FERNET_KEY: gQgtwrkWj32D6vaQ5aTrnnGNdIx3wSqNxzHw5TfzQLk=
-      AIRFLOW__API__SECRET_KEY: secret
+
+      # API auth secret shared by webserver & scheduler
+      AIRFLOW__API_AUTH__JWT_SECRET: -e0eRDU75K1gAgQ706OWi1V7ez5cg-ZYHy6QgaKBMOAn4IrHdrArjLzowKbkRekXcZb8Tbs4-WT6_pYph0qp8Q
+      AIRFLOW__API__SECRET_KEY: secreb_7ik-D9OApBW1O7RZp_JDz25Van4HvyCwDpr_UH43k7P761za2UucXBY7CcYqmtFN9ShR_O1Wrs-MsYefvC_gt
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.session,airflow.api.auth.backend.basic_auth
+
+      # << KEY FIXES >>
+      # Where the Task SDK calls back (base host:port)
+      AIRFLOW__SDK__API_URL: http://webserver:8080
+      # Where the Task Execution API lives (note the /execution/ suffix)
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://webserver:8080/execution/
+
+      # Logs folder you’ve mounted
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+
+      # Keep your extra deps
       PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-docker docker"
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'curl -sf http://localhost:8080/api/v2/monitor/health || exit 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     ports:
       - "8080:8080"
     command: ["airflow", "api-server", "--host", "0.0.0.0", "--port", "8080"]
@@ -101,6 +123,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      webserver:
+        condition: service_started
       init-airflow:
         condition: service_completed_successfully
     networks: [elt_network]
@@ -110,13 +134,42 @@ services:
       - ./custom_postgres/airflow/DAGs:/opt/airflow/dags
       - ./elt:/opt/airflow/dags/elt
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./airflow_logs:/opt/airflow/logs
+    
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__FERNET_KEY: gQgtwrkWj32D6vaQ5aTrnnGNdIx3wSqNxzHw5TfzQLk=
+
+      # API auth secret shared by webserver & scheduler
+      AIRFLOW__API_AUTH__JWT_SECRET: -e0eRDU75K1gAgQ706OWi1V7ez5cg-ZYHy6QgaKBMOAn4IrHdrArjLzowKbkRekXcZb8Tbs4-WT6_pYph0qp8Q
+      AIRFLOW__API__SECRET_KEY: secreb_7ik-D9OApBW1O7RZp_JDz25Van4HvyCwDpr_UH43k7P761za2UucXBY7CcYqmtFN9ShR_O1Wrs-MsYefvC_gt
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.session,airflow.api.auth.backend.basic_auth
+
+      # << KEY FIXES >>
+      # Where the Task SDK calls back (base host:port)
+      AIRFLOW__SDK__API_URL: http://webserver:8080
+      # Where the Task Execution API lives (note the /execution/ suffix)
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://webserver:8080/execution/
+
+      # Logs folder you’ve mounted
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+
+      # Keep your extra deps
       PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-docker docker"
+
+
     command: ["airflow", "scheduler"]
     restart: unless-stopped
+
+  dbt_image:   # build-only target for your custom dbt image
+    build:
+      context: ./dbt          # folder that has your Dockerfile + dbt project
+      dockerfile: Dockerfile  # adjust if your file isn’t literally called Dockerfile
+    image: my-dbt:1.7-pg      # tag that matches what your DAG is using
+    networks:
+      - elt_network
+    # This service doesn’t need volumes/ports/commands because Airflow runs dbt via DockerOperator
 
 # ---- Named volumes (Docker-managed storage) ----
 volumes:
@@ -126,4 +179,5 @@ volumes:
 
 networks:
   elt_network:
+    name: elt_network
     driver: bridge
