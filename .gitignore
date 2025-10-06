@@ -1,0 +1,6 @@
+
+target/
+dbt_packages/
+logs/
+venv/
+assignment_for_analytics_for_programming/
