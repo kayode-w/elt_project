@@ -70,7 +70,7 @@ services:
 
   webserver:
     image: apache/airflow:3.0.6-python3.12
-    user: root    # to access /var/run/docker.sock; drop to 'airflow' in hardened setups
+    # user: root    # to access /var/run/docker.sock; drop to 'airflow' in hardened setups
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,6 +95,8 @@ services:
       AIRFLOW__API__SECRET_KEY: secreb_7ik-D9OApBW1O7RZp_JDz25Van4HvyCwDpr_UH43k7P761za2UucXBY7CcYqmtFN9ShR_O1Wrs-MsYefvC_gt
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.session,airflow.api.auth.backend.basic_auth
 
+
+
       # << KEY FIXES >>
       # Where the Task SDK calls back (base host:port)
       AIRFLOW__SDK__API_URL: http://webserver:8080
@@ -105,7 +107,7 @@ services:
       AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
 
       # Keep your extra deps
-      PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-docker docker"
+      PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-docker docker apache-airflow-providers-airbyte"
 
     healthcheck:
       test: ["CMD-SHELL", "bash -lc 'curl -sf http://localhost:8080/api/v2/monitor/health || exit 1'"]
@@ -119,7 +121,7 @@ services:
 
   scheduler:
     image: apache/airflow:3.0.6-python3.12
-    user: root
+    # user: root #Remove after installing docker provider
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,6 +148,7 @@ services:
       AIRFLOW__API__SECRET_KEY: secreb_7ik-D9OApBW1O7RZp_JDz25Van4HvyCwDpr_UH43k7P761za2UucXBY7CcYqmtFN9ShR_O1Wrs-MsYefvC_gt
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.session,airflow.api.auth.backend.basic_auth
 
+
       # << KEY FIXES >>
       # Where the Task SDK calls back (base host:port)
       AIRFLOW__SDK__API_URL: http://webserver:8080
@@ -156,20 +159,30 @@ services:
       AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
 
       # Keep your extra deps
-      PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-docker docker"
-
+      PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-docker docker apache-airflow-providers-airbyte"
 
     command: ["airflow", "scheduler"]
     restart: unless-stopped
 
-  dbt_image:   # build-only target for your custom dbt image
-    build:
-      context: ./dbt          # folder that has your Dockerfile + dbt project
-      dockerfile: Dockerfile  # adjust if your file isn’t literally called Dockerfile
-    image: my-dbt:1.7-pg      # tag that matches what your DAG is using
-    networks:
-      - elt_network
+  ## running this service with python to trigger the elt_script
+
+  # dbt_image:   # build-only target for your custom dbt image
+  #   build:
+  #     context: ./dbt          # folder that has your Dockerfile + dbt project
+  #     dockerfile: Dockerfile  # adjust if your file isn’t literally called Dockerfile
+  #   image: my-dbt:1.7-pg      # tag that matches what your DAG is using
+  #   networks:
+  #     - elt_network
     # This service doesn’t need volumes/ports/commands because Airflow runs dbt via DockerOperator
+
+  dbt_image:
+    build:
+      context: ./dbt            # where your Dockerfile lives
+      dockerfile: Dockerfile
+    image: my-dbt:1.7-pg        # MUST match what your DAG references
+    profiles: ["build"]          # <- won't start with normal `compose up`
+    entrypoint: ["bash","-lc","sleep infinity"]  # safety if ever started
+    networks: [elt_network]
 
 # ---- Named volumes (Docker-managed storage) ----
 volumes:
